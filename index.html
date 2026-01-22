@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temperature IoT</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Tahoma', sans-serif;
+            color: white;
+            background-size: cover;
+            background-position: center;
+            background-image: url('https://images.unsplash.com/photo-1500530855697-b586d89ba3ee'); /* ภาพพื้นหลังเริ่มต้น */
+            transition: background-image 0.5s ease-in-out;
+            min-height: 100vh;
+        }
+
+        .card {
+            background: rgba(0, 0, 0, 0.65);
+            max-width: 420px;
+            margin: 20px auto;
+            padding: 22px;
+            border-radius: 22px;
+            text-align: center;
+            backdrop-filter: blur(5px);
+        }
+
+        .temp {
+            font-size: 46px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        /* ===== Tube (หลอดวัดอุณหภูมิ) ===== */
+        #tube {
+            width: 50px;
+            height: 220px;
+            margin: 15px auto;
+            background: #111;
+            border-radius: 30px;
+            overflow: hidden;
+            box-shadow: inset 0 0 12px #000;
+            position: relative;
+        }
+
+        #fill {
+            width: 100%;
+            height: 0%; /* ความสูงเริ่มต้น */
+            background: linear-gradient(180deg, #2ecc71, #f39c12, #e74c3c);
+            transition: height 0.6s ease-out;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+        }
+
+        /* เอฟเฟกต์น้ำไหล */
+        #fill::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: -80%;
+            width: 80%;
+            height: 100%;
+            background: linear-gradient(120deg, rgba(255,255,255,0), rgba(255,255,255,0.4), rgba(255,255,255,0));
+            animation: flow 2s linear infinite;
+        }
+
+        @keyframes flow {
+            from { left: -80%; }
+            to { left: 120%; }
+        }
+
+        /* ===== ปุ่มกด ===== */
+        button {
+            padding: 12px 24px;
+            margin: 6px;
+            border: none;
+            border-radius: 14px;
+            font-size: 15px;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.95); }
+        .on { background: #43a047; }
+        .off { background: #e53935; }
+        .on:hover { background: #2e7d32; }
+        .off:hover { background: #c62828; }
+
+        a { text-decoration: none; }
+
+        /* ===== ตาราง ===== */
+        table {
+            width: 100%;
+            margin-top: 10px;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border-bottom: 1px solid #555;
+            padding: 8px;
+        }
+        th { color: #90caf9; }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h2>🌡 ระบบวัดอุณหภูมิ</h2>
+        <div style="color:#ddd; font-size:14px;">📍 อ.เมืองเพชรบูรณ์</div>
+        <div id="status" style="margin-top:5px; font-weight:bold;">กำลังเชื่อมต่อ...</div>
+
+        <div class="temp" id="temp">-- °C</div>
+
+        <div id="tube"><div id="fill"></div></div>
+
+        <div style="background: rgba(255,255,255,0.1); border-radius:10px; padding:5px; margin-bottom:10px;">
+            <canvas id="chart" height="140"></canvas>
+        </div>
+        
+        <p id="time" style="font-size:12px; color:#aaa;">-</p>
+
+        <button class="on" onclick="sendCommand('on')">เปิดระบบ</button>
+        <button class="off" onclick="sendCommand('off')">ปิดระบบ</button>
+
+        <h3>📅 บันทึกข้อมูลล่าสุด</h3>
+        <table id="log">
+            <thead>
+                <tr><th>วัน-เวลา</th><th>อุณหภูมิ</th></tr>
+            </thead>
+            <tbody id="logBody">
+                <tr><td colspan="2">รอข้อมูล...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // ============================================
+        // ⚠️ แก้ไข IP Address ตรงนี้ให้ตรงกับ ESP8266 ของคุณ
+        // เช่น "http://192.168.1.45" (ดูได้จาก Serial Monitor ตอนต่อ WiFi)
+        const ESP_IP = "http://192.168.1.XXX"; 
+        // ============================================
+
+        let labels = [], temps = [];
+        
+        // ตั้งค่ากราฟ
+        const ctx = document.getElementById('chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'อุณหภูมิ',
+                    data: temps,
+                    borderColor: '#2196f3',
+                    backgroundColor: 'rgba(33, 150, 243, 0.2)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: { min: 0, max: 50, ticks: { color: '#ccc' } },
+                    x: { ticks: { display: false } } // ซ่อนแกน X เพื่อความสวยงาม
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        // ฟังก์ชันดึงข้อมูลจาก ESP8266
+        function loadData() {
+            // ใช้ URL เต็มๆ เพราะไฟล์ HTML อยู่คนละที่กับบอร์ด
+            fetch(ESP_IP + '/data')
+                .then(response => response.json())
+                .then(data => {
+                    updateUI(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById('status').innerText = "❌ เชื่อมต่อไม่ได้";
+                    document.getElementById('status').style.color = "#ff5252";
+                });
+        }
+
+        // ฟังก์ชันอัปเดตหน้าจอ
+        function updateUI(d) {
+            document.getElementById('temp').innerText = d.temp.toFixed(1) + " °C";
+            document.getElementById('time').innerText = "อัปเดตล่าสุด: " + d.time;
+            
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = d.on ? "🟢 ระบบเปิด" : "🔴 ระบบปิด";
+            statusEl.style.color = d.on ? "#69f0ae" : "#ff5252";
+
+            // เปลี่ยนรูปพื้นหลัง
+            document.body.style.backgroundImage = d.on
+                ? "url(https://images.unsplash.com/photo-1507525428034-b723cf961d3e)"
+                : "url(https://images.unsplash.com/photo-1500530855697-b586d89ba3ee)";
+
+            // ปรับความสูงกราฟแท่ง (หลอดแก้ว)
+            let fill = document.getElementById("fill");
+            let h = Math.min(100, d.temp * 2); // สมมติ max 50c = 100%
+            fill.style.height = h + "%";
+
+            // เปลี่ยนสีหลอดตามความร้อน
+            if (d.temp < 30) fill.style.background = "linear-gradient(180deg, #2ecc71, #27ae60)";
+            else if (d.temp < 35) fill.style.background = "linear-gradient(180deg, #f1c40f, #e67e22)";
+            else fill.style.background = "linear-gradient(180deg, #ff7043, #c0392b)";
+
+            // อัปเดตกราฟเส้น
+            if (labels.length > 10) { labels.shift(); temps.shift(); }
+            labels.push(d.time.split(" ")[1]); // เอาแค่เวลา
+            temps.push(d.temp);
+            chart.update();
+
+            // อัปเดตตาราง Log
+            let tbody = document.getElementById("logBody");
+            tbody.innerHTML = "";
+            if(d.log && d.log.length > 0){
+                d.log.forEach(r => {
+                    tbody.innerHTML += `<tr><td>${r.time}</td><td>${r.temp.toFixed(1)}°C</td></tr>`;
+                });
+            } else {
+                tbody.innerHTML = `<tr><td colspan="2">- ไม่มีข้อมูล -</td></tr>`;
+            }
+        }
+
+        // ฟังก์ชันสั่งงานเปิด/ปิด
+        function sendCommand(cmd) {
+            // ส่งคำสั่งไปที่ ESP โดยไม่ต้องโหลดหน้าใหม่
+            fetch(ESP_IP + '/' + cmd, { method: 'GET' }) // หรือ POST ตามสะดวก
+                .then(() => {
+                    console.log("Sent: " + cmd);
+                    loadData(); // โหลดข้อมูลใหม่ทันทีหลังกด
+                })
+                .catch(err => alert("สั่งงานไม่สำเร็จ: " + err));
+        }
+
+        // โหลดข้อมูลทุก 3 วินาที
+        setInterval(loadData, 3000);
+        loadData(); // โหลดครั้งแรกทันที
+    </script>
+</body>
+</html>
